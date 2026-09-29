@@ -386,7 +386,7 @@ mod tests {
         prune_entries(&mut l.total, &mut l.entries, 300, 200); // cutoff 100; ts==cutoff expired
         assert_eq!(l.total, 7);
         assert_eq!(l.entries.len(), 1);
-        assert_eq!(l.entries.get(0).unwrap().ts, 200);
+        assert_eq!(l.entries.first().unwrap().ts, 200);
     }
 
     #[test]
@@ -397,7 +397,7 @@ mod tests {
         admit_to_ledger(&mut total, &mut entries, 100, 3);
         admit_to_ledger(&mut total, &mut entries, 100, 4);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries.get(0).unwrap().amount, 7);
+        assert_eq!(entries.first().unwrap().amount, 7);
         admit_to_ledger(&mut total, &mut entries, 101, 5);
         assert_eq!(entries.len(), 2);
         assert_eq!(total, 12);
@@ -535,7 +535,7 @@ mod tests {
         ledger.prune(300, 200); // ts 0 exactly expired, ts 100 exactly expired
         assert_eq!(ledger.protocol_call_total, 1);
         assert_eq!(ledger.protocol_call_entries.len(), 1);
-        assert_eq!(ledger.protocol_call_entries.get(0).unwrap().ts, 200);
+        assert_eq!(ledger.protocol_call_entries.first().unwrap().ts, 200);
     }
 
     #[test]

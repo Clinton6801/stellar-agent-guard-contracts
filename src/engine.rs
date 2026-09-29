@@ -1310,7 +1310,7 @@ mod tests {
             proto_ctx(&env, 3, "swap"), // cumulative 3 > limit of 2
         ];
         let d = decide(&env, &sa, Some(&p), &alive(), &mut l, 1000, ctx);
-        assert!(matches!(d.get(0).unwrap(), Decision::Allowed));
+        assert!(matches!(d.first().unwrap(), Decision::Allowed));
         assert!(matches!(d.get(1).unwrap(), Decision::Allowed));
         assert!(matches!(
             d.get(2).unwrap(),
@@ -1345,7 +1345,7 @@ mod tests {
             proto_ctx(&env, 3, "swap"),    // Protocol - counts
         ];
         let d = decide(&env, &sa, Some(&p), &alive(), &mut l, 1000, ctx);
-        assert!(matches!(d.get(0).unwrap(), Decision::Allowed));
+        assert!(matches!(d.first().unwrap(), Decision::Allowed));
         assert!(matches!(d.get(1).unwrap(), Decision::Allowed));
         assert!(matches!(d.get(2).unwrap(), Decision::Allowed));
         assert!(matches!(d.get(3).unwrap(), Decision::Allowed));
