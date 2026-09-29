@@ -1295,11 +1295,16 @@ fn print_help() {
 /// Helper to extract a u64 field from a PolicyConfig ScVal::Map entry.
 /// PolicyConfig fields are stored as ScVal::Map with Symbol keys in sorted order.
 fn extract_u64_from_map(map: &ScMap, field_name: &str) -> Option<u64> {
+    let field_symbol = stellar_xdr::StringM::<32>::try_from(field_name.as_bytes().to_vec())
+        .ok()?;
     for entry in &map.0 {
         if let ScVal::Symbol(sym) = &entry.key {
-            if sym.0 == field_name.as_bytes().to_vec() {
-                if let ScVal::U64(val) = entry.val {
-                    return Some(val.0);
+            if sym == &field_symbol {
+                match entry.val {
+                    ScVal::U64(uint64_val) => {
+                        return Some(uint64_val.0);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1382,7 +1387,7 @@ fn cmd_status(rpc: &Rpc, guard: &ScAddress, _passphrase: &str) -> Result<(), Str
 
             if let LedgerEntryData::ContractData(cdata) = le {
                 if let ScVal::Symbol(sym) = &cdata.key {
-                    if sym.0 == b"Policy" {
+                    if sym.0.as_slice() == b"Policy" {
                         // PolicyConfig is stored as a Map with Symbol keys
                         let dms_grace_secs = extract_dms_grace_secs(&cdata.val);
                         
@@ -1503,7 +1508,9 @@ fn cmd_check(
                         if v0.topics.len() >= 2 {
                             // Extract the reason from the event topics
                             if let ScVal::Symbol(reason) = &v0.topics[v0.topics.len() - 1] {
-                                println!("diagnostic_reason: {}", reason);
+                                // Convert ScSymbol to string for display
+                                let reason_str = String::from_utf8_lossy(&reason.0);
+                                println!("diagnostic_reason: {}", reason_str);
                                 break;
                             }
                         }
