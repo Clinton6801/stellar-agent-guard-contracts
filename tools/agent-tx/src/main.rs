@@ -1295,16 +1295,12 @@ fn print_help() {
 /// Helper to extract a u64 field from a PolicyConfig ScVal::Map entry.
 /// PolicyConfig fields are stored as ScVal::Map with Symbol keys in sorted order.
 fn extract_u64_from_map(map: &ScMap, field_name: &str) -> Option<u64> {
-    let field_symbol = stellar_xdr::StringM::<32>::try_from(field_name.as_bytes().to_vec())
-        .ok()?;
+    let field_bytes = field_name.as_bytes();
     for entry in &map.0 {
         if let ScVal::Symbol(sym) = &entry.key {
-            if sym == &field_symbol {
-                match entry.val {
-                    ScVal::U64(uint64_val) => {
-                        return Some(uint64_val.0);
-                    }
-                    _ => {}
+            if sym.0.as_slice() == field_bytes {
+                if let ScVal::U64(ts) = entry.val {
+                    return Some(ts);
                 }
             }
         }
@@ -1363,7 +1359,7 @@ fn cmd_status(rpc: &Rpc, guard: &ScAddress, _passphrase: &str) -> Result<(), Str
                     }
                     b"LastHeartbeat" => {
                         if let ScVal::U64(ts) = cdata.val {
-                            last_heartbeat = ts.0;
+                            last_heartbeat = ts;
                         }
                     }
                     _ => {}
@@ -1486,7 +1482,7 @@ fn cmd_check(
         .expect("arg count"),
     };
 
-    let network_id: [u8; 32] = Sha256::digest(passphrase.as_bytes()).into();
+    let _network_id: [u8; 32] = Sha256::digest(passphrase.as_bytes()).into();
     let source_pk = [0u8; 32]; // dummy source for read-only simulation
     let seq = 0i64;
 
@@ -1504,7 +1500,7 @@ fn cmd_check(
             for ev in events {
                 if let Some(b64) = ev["xdr"].as_str() {
                     let de: DiagnosticEvent = xdr(b64);
-                    if let ContractEventBody::V0(v0) = &de.event.body {
+                    let ContractEventBody::V0(v0) = &de.event.body;
                         if v0.topics.len() >= 2 {
                             // Extract the reason from the event topics
                             if let ScVal::Symbol(reason) = &v0.topics[v0.topics.len() - 1] {
@@ -1514,7 +1510,6 @@ fn cmd_check(
                                 break;
                             }
                         }
-                    }
                 }
             }
         }
