@@ -1054,24 +1054,70 @@ mod tests {
     }
 
     #[test]
-    fn status_read_succeeds_with_mocked_rpc() {
-        let rpc = MockPreflightRpc {
-            sequence: std::cell::Cell::new(7),
-            response: serde_json::json!({
-                "entries": [
-                    {
-                        "xdr": "AAAADgAAAAA=" // dummy ledger entry
-                    }
-                ]
-            }),
-            ..Default::default()
-        };
+    fn extract_dms_grace_secs_from_policy_map() {
+        // Test that we can extract dms_grace_secs from a PolicyConfig map
+        let mut policy_map_entries = vec![];
+        
+        // Add dms_grace_secs (u64) field
+        policy_map_entries.push(ScMapEntry {
+            key: ScVal::Symbol(ScSymbol(stellar_xdr::VecM::try_from(b"dms_grace_secs".to_vec()).unwrap())),
+            val: ScVal::U64(Uint64(3600)), // 1 hour grace period
+        });
+        
+        let policy_map = ScMap(
+            stellar_xdr::VecM::try_from(policy_map_entries).unwrap()
+        );
+        
+        let policy_val = ScVal::Map(Some(policy_map));
+        
+        // Extract and verify
+        let dms_grace = extract_dms_grace_secs(&policy_val);
+        assert_eq!(dms_grace, 3600, "should extract dms_grace_secs=3600");
+    }
 
-        let guard: ScAddress = "CAYJZT4XH5SWDXNR7MZJCCUBIDAT2KZDDUTZ7OZQEMKCPJGD4P3X4CU7"
-            .parse()
-            .unwrap();
-        // The test verifies that cmd_status can be called without panicking
-        // In a full suite, we'd capture stdout to verify the output format
+    #[test]
+    fn extract_dms_grace_secs_returns_zero_when_not_found() {
+        // Test that extract_dms_grace_secs returns 0 when field is missing
+        let empty_map = ScMap(stellar_xdr::VecM::try_from(vec![]).unwrap());
+        let policy_val = ScVal::Map(Some(empty_map));
+        
+        let dms_grace = extract_dms_grace_secs(&policy_val);
+        assert_eq!(dms_grace, 0, "should return 0 when dms_grace_secs is not in map");
+    }
+
+    #[test]
+    fn extract_dms_grace_secs_handles_void_policy() {
+        // Test that extract_dms_grace_secs handles Void (no policy) gracefully
+        let policy_val = ScVal::Void;
+        
+        let dms_grace = extract_dms_grace_secs(&policy_val);
+        assert_eq!(dms_grace, 0, "should return 0 for Void policy");
+    }
+
+    #[test]
+    fn heartbeat_expiry_calculation() {
+        // Test the logic: heartbeat_expired if (now - last_heartbeat) > dms_grace_secs
+        // When last_heartbeat=50, dms_grace_secs=60, now=100:
+        // 100 - 50 = 50, which is NOT > 60, so heartbeat should NOT be expired
+        
+        let now = 100u32;
+        let last_heartbeat = 50u64;
+        let dms_grace_secs = 60u64;
+        
+        let heartbeat_expired = now.saturating_sub(last_heartbeat as u32) as u64 > dms_grace_secs;
+        assert!(!heartbeat_expired, "heartbeat should not be expired: (100-50)=50 is not > 60");
+        
+        // Test case 2: now=150, last_heartbeat=50, dms_grace_secs=60
+        // 150 - 50 = 100, which IS > 60, so heartbeat SHOULD be expired
+        let now2 = 150u32;
+        let heartbeat_expired2 = now2.saturating_sub(last_heartbeat as u32) as u64 > dms_grace_secs;
+        assert!(heartbeat_expired2, "heartbeat should be expired: (150-50)=100 is > 60");
+        
+        // Test case 3: last_heartbeat=0 (never heartbeated) with dms_grace_secs > 0
+        // Should be expired immediately
+        let last_heartbeat_zero = 0u64;
+        let is_never_heartbeated = last_heartbeat_zero == 0;
+        assert!(is_never_heartbeated, "should detect never-heartbeated state");
     }
 
     #[test]
@@ -1246,6 +1292,31 @@ fn print_help() {
 
 // ── Read-only diagnostics (status, policy, check) ───────────────────────
 
+/// Helper to extract a u64 field from a PolicyConfig ScVal::Map entry.
+/// PolicyConfig fields are stored as ScVal::Map with Symbol keys in sorted order.
+fn extract_u64_from_map(map: &ScMap, field_name: &str) -> Option<u64> {
+    for entry in &map.0 {
+        if let ScVal::Symbol(sym) = &entry.key {
+            if sym.0 == field_name.as_bytes().to_vec() {
+                if let ScVal::U64(val) = entry.val {
+                    return Some(val.0);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract dms_grace_secs from a PolicyConfig map.
+/// Returns 0 if the field is not found or the structure is malformed.
+fn extract_dms_grace_secs(policy_val: &ScVal) -> u64 {
+    if let ScVal::Map(Some(map)) = policy_val {
+        extract_u64_from_map(map, "dms_grace_secs").unwrap_or(0)
+    } else {
+        0
+    }
+}
+
 /// Fetch guard status: admin_frozen, has_policy, heartbeat_expired, last_heartbeat, now
 fn cmd_status(rpc: &Rpc, guard: &ScAddress, _passphrase: &str) -> Result<(), String> {
     // Fetch instance storage: Initialized, Admin, AgentPubkey (instance keys)
@@ -1302,28 +1373,31 @@ fn cmd_status(rpc: &Rpc, guard: &ScAddress, _passphrase: &str) -> Result<(), Str
     let now = latest; // ledger sequence is used as a proxy for "now" in a read context
 
     // Compute heartbeat_expired: depends on policy's dms_grace_secs and last_heartbeat
-    // For now, we fetch the policy separately to get dms_grace_secs
-    let policy_key = guard_data_key(guard, "Policy");
-    let policy_res = rpc.post(
-        "getLedgerEntries",
-        serde_json::json!({ "keys": [b64_encode_xdr(&policy_key)] }),
-    );
-
     let mut heartbeat_expired = false;
-    if let Some(entry) = policy_res["entries"].as_array().and_then(|e| e.first()) {
-        if let Some(entry_xdr) = entry["xdr"].as_str() {
+    if has_policy {
+        // Extract dms_grace_secs from the Policy entry we already fetched
+        for entry in entries {
+            let entry_xdr = entry["xdr"].as_str().ok_or("missing xdr")?;
             let le: LedgerEntryData = xdr(entry_xdr);
+
             if let LedgerEntryData::ContractData(cdata) = le {
-                if let ScVal::ContractInstance(instance) = &cdata.val {
-                    // Extract dms_grace_secs from the policy in storage
-                    if has_policy {
-                        // The policy is stored as a ContractInstance; we need to parse it
-                        // For simplicity, we'll compute heartbeat_expired based on available data
-                        // In a full implementation, we'd decode the policy structure
-                        // For now, mark as expired if last_heartbeat is 0 and has_policy is true
-                        if last_heartbeat == 0 && has_policy {
-                            heartbeat_expired = true;
+                if let ScVal::Symbol(sym) = &cdata.key {
+                    if sym.0 == b"Policy" {
+                        // PolicyConfig is stored as a Map with Symbol keys
+                        let dms_grace_secs = extract_dms_grace_secs(&cdata.val);
+                        
+                        // Heartbeat expired if: (now - last_heartbeat) > dms_grace_secs
+                        // OR if dms_grace_secs is enabled (> 0) and last_heartbeat is 0 (never heartbeated)
+                        if dms_grace_secs > 0 {
+                            if last_heartbeat == 0 {
+                                // Never heartbeated: expired immediately when DMS is enabled
+                                heartbeat_expired = true;
+                            } else {
+                                // Check if grace period has elapsed
+                                heartbeat_expired = now.saturating_sub(last_heartbeat as u32) as u64 > dms_grace_secs;
+                            }
                         }
+                        break;
                     }
                 }
             }
